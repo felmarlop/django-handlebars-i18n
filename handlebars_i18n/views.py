@@ -351,5 +351,3 @@ deliver your JavaScript source from Django templates.
 
         raise Exception(ex.msg)
     return render_javascript_catalog(catalog, plural)
-
-

@@ -1,33 +1,68 @@
 from __future__ import unicode_literals
-from collections import OrderedDict
-import locale
 import os
-import re
 import sys
 import gettext as gettext_module
-from threading import local
-import warnings
 import codecs
 
 from django.utils.importlib import import_module
-from django.core.management.utils import find_command, popen_wrapper
-from django.dispatch import receiver
-from django.test.signals import setting_changed
-from django.utils.encoding import force_str, force_text
-from django.utils._os import npath, upath
-from django.utils.safestring import mark_safe, SafeData
-from django.utils import six
-from django.utils.six import StringIO
-from django.utils.translation import TranslatorCommentWarning
+from django.core.management.base import CommandError
 
+from django.utils.encoding import DEFAULT_LOCALE_ENCODING
 
 import django.utils.translation.trans_real
 
 from django.utils.translation.trans_real import to_locale, DjangoTranslation
 
+from subprocess import PIPE, Popen
+
 from django.conf import settings
 
 _translations = {}
+
+
+def find_command(cmd, path=None, pathext=None):
+    if path is None:
+        path = os.environ.get('PATH', '').split(os.pathsep)
+    if isinstance(path, str):
+        path = [path]
+    # check if there are funny path extensions for executables, e.g. Windows
+    if pathext is None:
+        pathext = os.environ.get('PATHEXT', '.COM;.EXE;.BAT;.CMD').split(
+            os.pathsep)
+    # don't use extensions if the command ends with one of them
+    for ext in pathext:
+        if cmd.endswith(ext):
+            pathext = ['']
+            break
+    # check if we find the command on PATH
+    for p in path:
+        f = os.path.join(p, cmd)
+        if os.path.isfile(f):
+            return f
+        for ext in pathext:
+            fext = f + ext
+            if os.path.isfile(fext):
+                return fext
+    return None
+
+
+def popen_wrapper(args, stdout_encoding='utf-8'):
+    """
+    Friendly wrapper around Popen.
+    Return stdout output, stderr output, and OS status code.
+    """
+    try:
+        p = Popen(args, shell=False, stdout=PIPE, stderr=PIPE,
+                  close_fds=os.name != 'nt')
+    except OSError:
+        raise CommandError('Error executing %s' % args[0])
+    output, errors = p.communicate()
+    return (
+        output.decode(stdout_encoding),
+        errors.decode(DEFAULT_LOCALE_ENCODING, errors='replace'),
+        p.returncode
+    )
+
 
 if settings.DEBUG or getattr(settings, "I18N_RELOAD_ON_CHANGE", False):
     def has_reload_i18n_setting():
@@ -41,7 +76,6 @@ if settings.DEBUG or getattr(settings, "I18N_RELOAD_ON_CHANGE", False):
             return True
 
         return False
-
 
     def purge_i18n_caches():
         """Removes the local cache, and the gettext cache."""
@@ -87,13 +121,11 @@ if settings.DEBUG or getattr(settings, "I18N_RELOAD_ON_CHANGE", False):
 
         return False
 
-
     def compile_messages(domain, path, lang):
         """Compiles a .po file into a .mo file by domain, path, and lang."""
         po_file = ".".join([domain, "po"])
         file_path = os.path.join(path, lang, "LC_MESSAGES", po_file)
         compile_message_file(file_path)
-
 
     def compile_message_file(path):
         """Compiles a .po file into a .mo file by path."""
@@ -111,7 +143,8 @@ if settings.DEBUG or getattr(settings, "I18N_RELOAD_ON_CHANGE", False):
         if _has_bom(path):
             raise TranslationError("The %s file has a BOM (Byte Order Mark). Django only supports .po files encoded in UTF-8 and without any BOM." % path)
         pf = os.path.splitext(path)[0]
-        args = [program, '--check-format', '-o', npath(pf + '.mo'), npath(pf + '.po')]
+        args = [program, '--check-format', '-o', os.path.join(pf + '.mo'),
+                os.path.join(pf + '.po')]
         output, errors, status = popen_wrapper(args)
         if status:
             if errors:
@@ -142,7 +175,8 @@ if settings.DEBUG or getattr(settings, "I18N_RELOAD_ON_CHANGE", False):
         if t is not None:
             return t
 
-        globalpath = os.path.join(os.path.dirname(upath(sys.modules[settings.__module__].__file__)), 'locale')
+        globalpath = os.path.join(os.path.dirname(os.path.abspath(
+            sys.modules[settings.__module__].__file__)), 'locale')
 
         def _fetch(lang, fallback=None):
 
@@ -186,7 +220,8 @@ if settings.DEBUG or getattr(settings, "I18N_RELOAD_ON_CHANGE", False):
 
             for appname in reversed(settings.INSTALLED_APPS):
                 app = import_module(appname)
-                apppath = os.path.join(os.path.dirname(upath(app.__file__)), 'locale')
+                apppath = os.path.join(os.path.dirname(os.path.abspath(
+                    app.__file__)), 'locale')
 
                 if os.path.isdir(apppath):
                     res = _merge(apppath)
